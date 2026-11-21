@@ -7,17 +7,27 @@ local httpRequest = (syn and syn.request) or (http and http.request) or http_req
 local copyToClipboard = setclipboard or toclipboard or function() end
 local hwid = (RbxAnalyticsService and RbxAnalyticsService:GetClientId()) or tostring(Players.LocalPlayer.UserId)
 local localPlayer = Players.LocalPlayer
--- Queue only fires on teleports where getgenv persists, not fresh homepage joins
+-- Only auto reload on teleports, not fresh joins
 if queue_on_teleport then
-    queue_on_teleport('if getgenv and getgenv().XyloLoaded then loadstring(game:HttpGet("' .. SCRIPT_URL .. '"))() end')
+    queue_on_teleport('if getgenv and getgenv().XyloActive then loadstring(game:HttpGet("' .. SCRIPT_URL .. '"))() end')
 end
-if getgenv then getgenv().XyloLoaded = true end
--- Persist session start time across teleports
-if getgenv and not getgenv().XyloSessionStart then
-    getgenv().XyloSessionStart = tick()
+if getgenv then getgenv().XyloActive = true end
+-- Detect teleport reload vs fresh execution
+local isTeleportReload = false
+local savedExpiryTime = nil
+local savedKeyValue = nil
+if getgenv then
+    if getgenv().XyloSavedKey and getgenv().XyloExpiry then
+        isTeleportReload = true
+        savedKeyValue = getgenv().XyloSavedKey
+        savedExpiryTime = getgenv().XyloExpiry
+    end
+    if not getgenv().XyloSessionStart then
+        getgenv().XyloSessionStart = tick()
+    end
 end
 local SCRIPT_START_TIME = (getgenv and getgenv().XyloSessionStart) or tick()
--- Cleanup any previous instances
+-- Cleanup previous instances
 for _, name in ipairs({"XyloKeySystemUI", "XyloMainMenuUI", "XyloExpiredPopup", "XyloCloseBlur"}) do
     local found = CoreGui:FindFirstChild(name) or Lighting:FindFirstChild(name)
     if found then found:Destroy() end
@@ -26,6 +36,14 @@ local function create(class, props)
     local inst = Instance.new(class)
     for k, v in pairs(props) do inst[k] = v end
     return inst
+end
+local function clearTeleportState()
+    if getgenv then
+        getgenv().XyloActive = nil
+        getgenv().XyloSavedKey = nil
+        getgenv().XyloExpiry = nil
+        getgenv().XyloSessionStart = nil
+    end
 end
 local function deleteSavedKey()
     pcall(function()
@@ -166,6 +184,7 @@ local openMainMenu, showExpiredPopup
 showExpiredPopup = function(expiredKey)
     if not activeSession then return end
     activeSession = false
+    clearTeleportState()
     deleteSavedKey()
     if expiredKey then requestKeyDeletion(expiredKey) end
     if CoreGui:FindFirstChild("XyloKeySystemUI") then CoreGui.XyloKeySystemUI:Destroy() end
@@ -215,35 +234,6 @@ local function startKeyWatcher(activeKey)
             end
         end
     end)
-end
-
--- SILENT KEY VALIDATION FOR AUTO LOGIN
-
-local function silentValidate(key)
-    local success, response = pcall(function()
-        return httpRequest({Url = API_URL, Method = "POST", Headers = {["Content-Type"] = "application/json"}, Body = HttpService:JSONEncode({key = key, hwid = hwid})})
-    end)
-    if success and response and response.Body then
-        local ok, data = pcall(function() return HttpService:JSONDecode(response.Body) end)
-        if ok and type(data) == "table" then
-            if data.valid == true or data.success == true then
-                local expRaw = data.expires_at or data.expiresAt or data.expiry or data.expiration
-                local parsedExp = parseTimestamp(expRaw)
-                local actRaw = data.activated_at or data.activatedAt or data.first_activated or data.first_used or data.created_at
-                local parsedAct = parseTimestamp(actRaw)
-                local duration = tonumber(data.duration) or 86400
-                local computedExpiryTime = nil
-                if parsedExp then computedExpiryTime = parsedExp
-                elseif parsedAct then computedExpiryTime = parsedAct + duration
-                elseif data.timeLeft or data.time_left then computedExpiryTime = os.time() + (tonumber(data.timeLeft or data.time_left) or 86400) end
-                if computedExpiryTime and computedExpiryTime <= os.time() then
-                    return false
-                end
-                return true, computedExpiryTime
-            end
-        end
-    end
-    return false
 end
 
 -- CLOSE CONFIRMATION MODAL
@@ -329,10 +319,14 @@ task.spawn(function()
     end
 end)
 
--- MAIN MENU AFTER KEY ACCEPTED
+-- MAIN MENU
 
 openMainMenu = function(expiryTimestamp, verifiedKey)
     local expiryTime = expiryTimestamp or (os.time() + 86400)
+    if getgenv then
+        getgenv().XyloSavedKey = verifiedKey
+        getgenv().XyloExpiry = expiryTime
+    end
     local MenuGui = create("ScreenGui", {Name = "XyloMainMenuUI", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, Parent = CoreGui})
     local MainMenuFrame = create("Frame", {Name = "MainMenuFrame", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0), Size = UDim2.new(0, 620, 0, 420), BackgroundColor3 = Color3.fromRGB(11, 11, 13), BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 2, Parent = MenuGui})
     create("UICorner", {CornerRadius = UDim.new(0, 10), Parent = MainMenuFrame})
@@ -475,7 +469,6 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
             end
         end)
     end)
-    -- KEY EXPIRY CARD
     local ExpiryBadge = create("Frame", {Name = "KeyExpiryBadge", AnchorPoint = Vector2.new(1, 0), Size = UDim2.new(0, 240, 0, 130), Position = UDim2.new(1, -24, 0, 88), BackgroundColor3 = Color3.fromRGB(16, 16, 21), BorderSizePixel = 0, Parent = HomePage})
     create("UICorner", {CornerRadius = UDim.new(0, 12), Parent = ExpiryBadge})
     create("UIStroke", {Thickness = 1, Color = Color3.fromRGB(36, 36, 46), ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = ExpiryBadge})
@@ -488,7 +481,6 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
     local expiryDateStr = os.date("%d/%m/%Y %H:%M", expiryTime)
     create("TextLabel", {Name = "DateText", Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1, Text = expiryDateStr, TextColor3 = Color3.fromRGB(155, 155, 170), Font = Enum.Font.GothamMedium, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 1, Parent = DateRow})
     create("TextLabel", {Name = "DateHint", Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1, Text = "(DD/MM/YYYY)", TextColor3 = Color3.fromRGB(95, 95, 110), Font = Enum.Font.Gotham, TextSize = 9, TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 2, Parent = DateRow})
-    -- BOTTOM STATUS BAR
     local BottomStatusBar = create("Frame", {Name = "BottomStatusBar", Size = UDim2.new(1, 0, 0, 24), Position = UDim2.new(0, 0, 1, -24), BackgroundColor3 = Color3.fromRGB(13, 13, 16), BorderSizePixel = 0, ZIndex = 8, Parent = MainContent})
     create("Frame", {Name = "BottomDivider", Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 0, 0), BackgroundColor3 = Color3.fromRGB(26, 26, 32), BorderSizePixel = 0, Parent = BottomStatusBar})
     local SessionTimerLabel = create("TextLabel", {Name = "SessionTimerLabel", Size = UDim2.new(0, 250, 1, 0), Position = UDim2.new(0, 16, 0, 0), BackgroundTransparency = 1, Text = "Session: 00h 00m 00s", TextColor3 = Color3.fromRGB(145, 145, 160), Font = Enum.Font.GothamMedium, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left, Parent = BottomStatusBar})
@@ -541,7 +533,6 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
         autoClosePopupsEnabled = not autoClosePopupsEnabled
         setToggleVisual(autoClosePopupsEnabled)
     end)
-    -- Tab Switching
     local currentTab = "Home"
     local function setTab(tabName)
         if not activeSession or currentTab == tabName then return end
@@ -568,7 +559,7 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
     SettingsBtn.MouseButton1Click:Connect(function() setTab("Settings") end)
     local promptMenuClose = attachConfirmModal(MainMenuFrame, function()
         activeSession = false
-        if getgenv then getgenv().XyloLoaded = nil; getgenv().XyloSessionStart = nil end
+        clearTeleportState()
         local t = TweenService:Create(MenuScale, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {Scale = 0})
         t:Play()
         t.Completed:Wait()
@@ -603,7 +594,7 @@ KeyCloseBtn.MouseEnter:Connect(function() TweenService:Create(KeyCloseBtn, Tween
 KeyCloseBtn.MouseLeave:Connect(function() TweenService:Create(KeyCloseBtn, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(130, 130, 140)}):Play() end)
 makeDraggable(KeyTopBar, MainFrame)
 local promptKeyClose = attachConfirmModal(MainFrame, function()
-    if getgenv then getgenv().XyloLoaded = nil; getgenv().XyloSessionStart = nil end
+    clearTeleportState()
     local t = TweenService:Create(MainScale, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {Scale = 0})
     t:Play()
     t.Completed:Wait()
@@ -619,6 +610,7 @@ local InputStroke = create("UIStroke", {Thickness = 1, Color = Color3.fromRGB(42
 local InputBox = create("TextBox", {Size = UDim2.new(1, -20, 1, 0), Position = UDim2.new(0, 12, 0, 0), BackgroundTransparency = 1, Text = "", PlaceholderText = "Paste your key here...", PlaceholderColor3 = Color3.fromRGB(85, 85, 95), TextColor3 = Color3.fromRGB(255, 255, 255), Font = Enum.Font.Gotham, TextSize = 12, ClearTextOnFocus = false, Parent = InputContainer})
 InputBox.Focused:Connect(function() TweenService:Create(InputStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(120, 120, 140)}):Play() end)
 InputBox.FocusLost:Connect(function() TweenService:Create(InputStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(42, 42, 52)}):Play() end)
+-- Remember Key Checkbox
 local rememberKey = false
 local CheckboxRow = create("TextButton", {Size = UDim2.new(0, 300, 0, 20), Position = UDim2.new(0.5, -150, 0, 142), BackgroundTransparency = 1, Text = "", Parent = ContentContainer})
 local CheckBoxFrame = create("Frame", {Size = UDim2.new(0, 14, 0, 14), Position = UDim2.new(0, 4, 0.5, -7), BackgroundColor3 = Color3.fromRGB(16, 16, 20), BorderSizePixel = 0, Parent = CheckboxRow})
@@ -633,12 +625,11 @@ local function updateCheckboxVisual()
     TweenService:Create(CheckboxLabel, TweenInfo.new(0.15), {TextColor3 = rememberKey and Color3.fromRGB(220, 220, 230) or Color3.fromRGB(140, 140, 150)}):Play()
 end
 CheckboxRow.MouseButton1Click:Connect(function() rememberKey = not rememberKey; updateCheckboxVisual() end)
-local hasSavedKey = false
-local savedKeyValue = ""
+-- Load saved key from file (for fresh executions)
 pcall(function()
     if isfile and readfile and isfile("xylo_key.txt") then
         local raw = readfile("xylo_key.txt")
-        if raw and #raw > 0 then InputBox.Text = raw; savedKeyValue = raw:gsub("%s+", ""); rememberKey = true; hasSavedKey = true; updateCheckboxVisual() end
+        if raw and #raw > 0 then InputBox.Text = raw; rememberKey = true; updateCheckboxVisual() end
     end
 end)
 local SubmitBtn = create("TextButton", {Size = UDim2.new(0, 300, 0, 36), Position = UDim2.new(0.5, -150, 0, 170), BackgroundColor3 = Color3.fromRGB(245, 245, 245), TextColor3 = Color3.fromRGB(10, 10, 10), Text = "Submit Key", Font = Enum.Font.GothamBold, TextSize = 13, BorderSizePixel = 0, AutoButtonColor = false, Parent = ContentContainer})
@@ -727,7 +718,7 @@ local function validateKey()
 end
 SubmitBtn.MouseButton1Click:Connect(validateKey)
 InputBox.FocusLost:Connect(function(enterPressed) if enterPressed then validateKey() end end)
--- Loading Animation Flow with Direct Menu Open
+-- Loading Animation Flow
 task.spawn(function()
     TweenService:Create(MainScale, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
     task.wait(0.5)
@@ -741,25 +732,14 @@ task.spawn(function()
         shineLogo.Completed:Wait()
         if i < 2 then task.wait(0.12) end
     end
-    -- Check for saved key before showing content
-    if hasSavedKey and savedKeyValue ~= "" then
-        local isValid, expTime = silentValidate(savedKeyValue)
-        if isValid then
-            -- Direct menu open, no key UI shown
-            KeyGui:Destroy()
-            startKeyWatcher(savedKeyValue)
-            openMainMenu(expTime, savedKeyValue)
-            return
-        else
-            -- Key invalid or expired, show key system
-            deleteSavedKey()
-            hasSavedKey = false
-            rememberKey = false
-            updateCheckboxVisual()
-            InputBox.Text = ""
-        end
+    -- Teleport reload with saved key: skip key system entirely
+    if isTeleportReload and savedKeyValue and savedExpiryTime then
+        KeyGui:Destroy()
+        startKeyWatcher(savedKeyValue)
+        openMainMenu(savedExpiryTime, savedKeyValue)
+        return
     end
-    -- Show key system normally
+    -- Fresh execution: show key system (with pre-filled key if remembered)
     TweenService:Create(LoadingContainer, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {GroupTransparency = 1}):Play()
     task.wait(0.35)
     LoadingContainer.Visible = false
