@@ -7,21 +7,20 @@ local httpRequest = (syn and syn.request) or (http and http.request) or http_req
 local copyToClipboard = setclipboard or toclipboard or function() end
 local hwid = (RbxAnalyticsService and RbxAnalyticsService:GetClientId()) or tostring(Players.LocalPlayer.UserId)
 local localPlayer = Players.LocalPlayer
--- Set a flag in the new instance before loading so we can detect teleports
+-- Set flag in new instance before loading so we can detect teleports
 if queue_on_teleport then
     queue_on_teleport('if getgenv then getgenv().__XyloTP = true end loadstring(game:HttpGet("' .. SCRIPT_URL .. '"))()')
 end
--- Detect teleport reload via the flag set by queue_on_teleport
+-- Detect teleport reload via flag set by queue_on_teleport
 local isTeleportReload = false
 local savedKeyValue, savedExpiryTime, savedSessionStart
 if getgenv and getgenv().__XyloTP then
     isTeleportReload = true
     getgenv().__XyloTP = nil
-    -- Try getgenv for session data
-    if getgenv.XyloSavedKey and getgenv.XyloExpiry then
-        savedKeyValue = getgenv.XyloSavedKey
-        savedExpiryTime = getgenv.XyloExpiry
-        savedSessionStart = getgenv.XyloSessionStart
+    if getgenv().XyloSavedKey and getgenv().XyloExpiry then
+        savedKeyValue = getgenv().XyloSavedKey
+        savedExpiryTime = getgenv().XyloExpiry
+        savedSessionStart = getgenv().XyloSessionStart
     end
 end
 -- Fallback to session file if getgenv was wiped
@@ -38,10 +37,10 @@ if isTeleportReload and not savedKeyValue then
     end)
 end
 -- Session start time persists across teleports
-if savedSessionStart then
-    -- Keep original session start
-elseif getgenv and getgenv.XyloSessionStart then
-    savedSessionStart = getgenv.XyloSessionStart
+if not savedSessionStart then
+    if getgenv and getgenv().XyloSessionStart then
+        savedSessionStart = getgenv().XyloSessionStart
+    end
 end
 if not savedSessionStart then savedSessionStart = tick() end
 local SCRIPT_START_TIME = savedSessionStart
@@ -526,7 +525,6 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
         autoClosePopupsEnabled = not autoClosePopupsEnabled
         setToggleVisual(autoClosePopupsEnabled)
     end)
-    -- Tab Switching
     local currentTab = "Home"
     local function setTab(tabName)
         if not activeSession or currentTab == tabName then return end
@@ -714,14 +712,12 @@ task.spawn(function()
         shineLogo:Play(); shineText:Play(); shineLogo.Completed:Wait()
         if i < 2 then task.wait(0.12) end
     end
-    -- Teleport reload: skip key system entirely
     if isTeleportReload and savedKeyValue and savedExpiryTime then
         KeyGui:Destroy()
         startKeyWatcher(savedKeyValue)
         openMainMenu(savedExpiryTime, savedKeyValue)
         return
     end
-    -- Fresh execution: show key system
     TweenService:Create(LoadingContainer, TweenInfo.new(0.35), {GroupTransparency = 1}):Play()
     task.wait(0.35)
     LoadingContainer.Visible = false
