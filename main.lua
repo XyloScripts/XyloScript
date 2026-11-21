@@ -36,6 +36,13 @@ if isTeleportReload and not savedKeyValue then
         end
     end)
 end
+-- If NOT a teleport (manual execution), wipe any stale session data
+if not isTeleportReload then
+    pcall(function()
+        if delfile and isfile and isfile("xylo_session.txt") then delfile("xylo_session.txt") end
+    end)
+    savedKeyValue, savedExpiryTime, savedSessionStart = nil, nil, nil
+end
 -- Session start time persists across teleports
 if not savedSessionStart then
     if getgenv and getgenv().XyloSessionStart then
@@ -712,12 +719,14 @@ task.spawn(function()
         shineLogo:Play(); shineText:Play(); shineLogo.Completed:Wait()
         if i < 2 then task.wait(0.12) end
     end
+    -- Teleport reload: skip key system entirely
     if isTeleportReload and savedKeyValue and savedExpiryTime then
         KeyGui:Destroy()
         startKeyWatcher(savedKeyValue)
         openMainMenu(savedExpiryTime, savedKeyValue)
         return
     end
+    -- Fresh execution: show key system
     TweenService:Create(LoadingContainer, TweenInfo.new(0.35), {GroupTransparency = 1}):Play()
     task.wait(0.35)
     LoadingContainer.Visible = false
@@ -732,3 +741,15 @@ task.spawn(function()
         end
     end)
 end)
+```
+
+**The only change** is this block after the teleport fallback:
+
+```lua
+-- If NOT a teleport (manual execution), wipe any stale session data
+if not isTeleportReload then
+    pcall(function()
+        if delfile and isfile and isfile("xylo_session.txt") then delfile("xylo_session.txt") end
+    end)
+    savedKeyValue, savedExpiryTime, savedSessionStart = nil, nil, nil
+end
