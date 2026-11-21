@@ -7,26 +7,24 @@ local httpRequest = (syn and syn.request) or (http and http.request) or http_req
 local copyToClipboard = setclipboard or toclipboard or function() end
 local hwid = (RbxAnalyticsService and RbxAnalyticsService:GetClientId()) or tostring(Players.LocalPlayer.UserId)
 local localPlayer = Players.LocalPlayer
--- Only auto reload on teleports, not fresh joins
+-- Queue reload on teleport only (naturally does not fire on homepage joins)
 if queue_on_teleport then
-    queue_on_teleport('if getgenv and getgenv().XyloActive then loadstring(game:HttpGet("' .. SCRIPT_URL .. '"))() end')
+    queue_on_teleport('loadstring(game:HttpGet("' .. SCRIPT_URL .. '"))()')
 end
-if getgenv then getgenv().XyloActive = true end
--- Detect teleport reload vs fresh execution
+-- Persist key and expiry across teleports via getgenv
+if getgenv and not getgenv().XyloSessionStart then
+    getgenv().XyloSessionStart = tick()
+end
+local SCRIPT_START_TIME = (getgenv and getgenv().XyloSessionStart) or tick()
+-- Detect teleport reload
 local isTeleportReload = false
 local savedExpiryTime = nil
 local savedKeyValue = nil
-if getgenv then
-    if getgenv().XyloSavedKey and getgenv().XyloExpiry then
-        isTeleportReload = true
-        savedKeyValue = getgenv().XyloSavedKey
-        savedExpiryTime = getgenv().XyloExpiry
-    end
-    if not getgenv().XyloSessionStart then
-        getgenv().XyloSessionStart = tick()
-    end
+if getgenv and getgenv().XyloSavedKey and getgenv().XyloExpiry then
+    isTeleportReload = true
+    savedKeyValue = getgenv().XyloSavedKey
+    savedExpiryTime = getgenv().XyloExpiry
 end
-local SCRIPT_START_TIME = (getgenv and getgenv().XyloSessionStart) or tick()
 -- Cleanup previous instances
 for _, name in ipairs({"XyloKeySystemUI", "XyloMainMenuUI", "XyloExpiredPopup", "XyloCloseBlur"}) do
     local found = CoreGui:FindFirstChild(name) or Lighting:FindFirstChild(name)
@@ -39,7 +37,6 @@ local function create(class, props)
 end
 local function clearTeleportState()
     if getgenv then
-        getgenv().XyloActive = nil
         getgenv().XyloSavedKey = nil
         getgenv().XyloExpiry = nil
         getgenv().XyloSessionStart = nil
@@ -610,7 +607,6 @@ local InputStroke = create("UIStroke", {Thickness = 1, Color = Color3.fromRGB(42
 local InputBox = create("TextBox", {Size = UDim2.new(1, -20, 1, 0), Position = UDim2.new(0, 12, 0, 0), BackgroundTransparency = 1, Text = "", PlaceholderText = "Paste your key here...", PlaceholderColor3 = Color3.fromRGB(85, 85, 95), TextColor3 = Color3.fromRGB(255, 255, 255), Font = Enum.Font.Gotham, TextSize = 12, ClearTextOnFocus = false, Parent = InputContainer})
 InputBox.Focused:Connect(function() TweenService:Create(InputStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(120, 120, 140)}):Play() end)
 InputBox.FocusLost:Connect(function() TweenService:Create(InputStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(42, 42, 52)}):Play() end)
--- Remember Key Checkbox
 local rememberKey = false
 local CheckboxRow = create("TextButton", {Size = UDim2.new(0, 300, 0, 20), Position = UDim2.new(0.5, -150, 0, 142), BackgroundTransparency = 1, Text = "", Parent = ContentContainer})
 local CheckBoxFrame = create("Frame", {Size = UDim2.new(0, 14, 0, 14), Position = UDim2.new(0, 4, 0.5, -7), BackgroundColor3 = Color3.fromRGB(16, 16, 20), BorderSizePixel = 0, Parent = CheckboxRow})
@@ -625,7 +621,6 @@ local function updateCheckboxVisual()
     TweenService:Create(CheckboxLabel, TweenInfo.new(0.15), {TextColor3 = rememberKey and Color3.fromRGB(220, 220, 230) or Color3.fromRGB(140, 140, 150)}):Play()
 end
 CheckboxRow.MouseButton1Click:Connect(function() rememberKey = not rememberKey; updateCheckboxVisual() end)
--- Load saved key from file (for fresh executions)
 pcall(function()
     if isfile and readfile and isfile("xylo_key.txt") then
         local raw = readfile("xylo_key.txt")
@@ -732,14 +727,14 @@ task.spawn(function()
         shineLogo.Completed:Wait()
         if i < 2 then task.wait(0.12) end
     end
-    -- Teleport reload with saved key: skip key system entirely
+    -- Teleport reload: skip key system, open menu directly
     if isTeleportReload and savedKeyValue and savedExpiryTime then
         KeyGui:Destroy()
         startKeyWatcher(savedKeyValue)
         openMainMenu(savedExpiryTime, savedKeyValue)
         return
     end
-    -- Fresh execution: show key system (with pre-filled key if remembered)
+    -- Fresh execution: show key system
     TweenService:Create(LoadingContainer, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {GroupTransparency = 1}):Play()
     task.wait(0.35)
     LoadingContainer.Visible = false
