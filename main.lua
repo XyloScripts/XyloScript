@@ -7,24 +7,44 @@ local httpRequest = (syn and syn.request) or (http and http.request) or http_req
 local copyToClipboard = setclipboard or toclipboard or function() end
 local hwid = (RbxAnalyticsService and RbxAnalyticsService:GetClientId()) or tostring(Players.LocalPlayer.UserId)
 local localPlayer = Players.LocalPlayer
--- Queue reload on teleport only (naturally does not fire on homepage joins)
+-- Set a flag in the new instance before loading so we can detect teleports
 if queue_on_teleport then
-    queue_on_teleport('loadstring(game:HttpGet("' .. SCRIPT_URL .. '"))()')
+    queue_on_teleport('if getgenv then getgenv().__XyloTP = true end loadstring(game:HttpGet("' .. SCRIPT_URL .. '"))()')
 end
--- Persist key and expiry across teleports via getgenv
-if getgenv and not getgenv().XyloSessionStart then
-    getgenv().XyloSessionStart = tick()
-end
-local SCRIPT_START_TIME = (getgenv and getgenv().XyloSessionStart) or tick()
--- Detect teleport reload
+-- Detect teleport reload via the flag set by queue_on_teleport
 local isTeleportReload = false
-local savedExpiryTime = nil
-local savedKeyValue = nil
-if getgenv and getgenv().XyloSavedKey and getgenv().XyloExpiry then
+local savedKeyValue, savedExpiryTime, savedSessionStart
+if getgenv and getgenv().__XyloTP then
     isTeleportReload = true
-    savedKeyValue = getgenv().XyloSavedKey
-    savedExpiryTime = getgenv().XyloExpiry
+    getgenv().__XyloTP = nil
+    -- Try getgenv for session data
+    if getgenv.XyloSavedKey and getgenv.XyloExpiry then
+        savedKeyValue = getgenv.XyloSavedKey
+        savedExpiryTime = getgenv.XyloExpiry
+        savedSessionStart = getgenv.XyloSessionStart
+    end
 end
+-- Fallback to session file if getgenv was wiped
+if isTeleportReload and not savedKeyValue then
+    pcall(function()
+        if isfile and readfile and isfile("xylo_session.txt") then
+            local data = HttpService:JSONDecode(readfile("xylo_session.txt"))
+            if data and data.key then
+                savedKeyValue = data.key
+                savedExpiryTime = data.expiry
+                savedSessionStart = data.sessionStart
+            end
+        end
+    end)
+end
+-- Session start time persists across teleports
+if savedSessionStart then
+    -- Keep original session start
+elseif getgenv and getgenv.XyloSessionStart then
+    savedSessionStart = getgenv.XyloSessionStart
+end
+if not savedSessionStart then savedSessionStart = tick() end
+local SCRIPT_START_TIME = savedSessionStart
 -- Cleanup previous instances
 for _, name in ipairs({"XyloKeySystemUI", "XyloMainMenuUI", "XyloExpiredPopup", "XyloCloseBlur"}) do
     local found = CoreGui:FindFirstChild(name) or Lighting:FindFirstChild(name)
@@ -40,7 +60,23 @@ local function clearTeleportState()
         getgenv().XyloSavedKey = nil
         getgenv().XyloExpiry = nil
         getgenv().XyloSessionStart = nil
+        getgenv().__XyloTP = nil
     end
+    pcall(function()
+        if delfile and isfile and isfile("xylo_session.txt") then delfile("xylo_session.txt") end
+    end)
+end
+local function saveSessionData(key, expiry, sessionStart)
+    if getgenv then
+        getgenv().XyloSavedKey = key
+        getgenv().XyloExpiry = expiry
+        getgenv().XyloSessionStart = sessionStart
+    end
+    pcall(function()
+        if writefile then
+            writefile("xylo_session.txt", HttpService:JSONEncode({key = key, expiry = expiry, sessionStart = sessionStart}))
+        end
+    end)
 end
 local function deleteSavedKey()
     pcall(function()
@@ -147,8 +183,7 @@ local function createSettingsIcon(size, parent, initialColor)
     local color = initialColor or Color3.fromRGB(130, 130, 140)
     local container = create("Frame", {Name = "SettingsLinesIcon", Size = UDim2.new(0, size, 0, size), BackgroundTransparency = 1, BorderSizePixel = 0, Parent = parent})
     local parts = {}
-    local lineData = {{y = 0.22, knobX = 0.30}, {y = 0.50, knobX = 0.70}, {y = 0.78, knobX = 0.40}}
-    for _, d in ipairs(lineData) do
+    for _, d in ipairs({{y = 0.22, knobX = 0.30}, {y = 0.50, knobX = 0.70}, {y = 0.78, knobX = 0.40}}) do
         local line = create("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, d.y, 0), Size = UDim2.new(0, math.round(size * 0.88), 0, 2), BackgroundColor3 = color, BorderSizePixel = 0, Parent = container})
         create("UICorner", {CornerRadius = UDim.new(1, 0), Parent = line})
         table.insert(parts, line)
@@ -288,42 +323,22 @@ local function autoClosePaycheque()
     if not subMenus then return end
     local paycheque = subMenus:FindFirstChild("Paycheque")
     if not paycheque then return end
-    local isVisible = false
-    if paycheque:IsA("ScreenGui") then
-        isVisible = paycheque.Enabled
-    else
-        isVisible = paycheque.Visible
-    end
+    local isVisible = paycheque:IsA("ScreenGui") and paycheque.Enabled or paycheque.Visible
     if isVisible then
-        if paycheque:IsA("ScreenGui") then
-            paycheque.Enabled = false
-        else
-            paycheque.Visible = false
-        end
+        if paycheque:IsA("ScreenGui") then paycheque.Enabled = false else paycheque.Visible = false end
         local closeBtn = paycheque:FindFirstChild("CloseMenu")
-        if closeBtn and closeBtn:IsA("GuiButton") then
-            if typeof(getconnections) == "function" then
-                for _, connection in pairs(getconnections(closeBtn.MouseButton1Click)) do
-                    connection:Fire()
-                end
-            end
+        if closeBtn and closeBtn:IsA("GuiButton") and typeof(getconnections) == "function" then
+            for _, connection in pairs(getconnections(closeBtn.MouseButton1Click)) do connection:Fire() end
         end
     end
 end
-task.spawn(function()
-    while task.wait(0.5) do
-        pcall(autoClosePaycheque)
-    end
-end)
+task.spawn(function() while task.wait(0.5) do pcall(autoClosePaycheque) end end)
 
 -- MAIN MENU
 
 openMainMenu = function(expiryTimestamp, verifiedKey)
     local expiryTime = expiryTimestamp or (os.time() + 86400)
-    if getgenv then
-        getgenv().XyloSavedKey = verifiedKey
-        getgenv().XyloExpiry = expiryTime
-    end
+    saveSessionData(verifiedKey, expiryTime, SCRIPT_START_TIME)
     local MenuGui = create("ScreenGui", {Name = "XyloMainMenuUI", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, Parent = CoreGui})
     local MainMenuFrame = create("Frame", {Name = "MainMenuFrame", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0), Size = UDim2.new(0, 620, 0, 420), BackgroundColor3 = Color3.fromRGB(11, 11, 13), BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 2, Parent = MenuGui})
     create("UICorner", {CornerRadius = UDim.new(0, 10), Parent = MainMenuFrame})
@@ -356,10 +371,8 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
     local function restoreMenu()
         if not activeSession then return end
         local t = TweenService:Create(FloatScale, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {Scale = 0})
-        t:Play()
-        t.Completed:Wait()
-        FloatBtn.Visible = false
-        MainMenuFrame.Visible = true
+        t:Play(); t.Completed:Wait()
+        FloatBtn.Visible = false; MainMenuFrame.Visible = true
         TweenService:Create(MenuScale, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
     end
     local fMoveConn, fEndConn
@@ -368,9 +381,7 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             if fMoveConn then fMoveConn:Disconnect() end
             if fEndConn then fEndConn:Disconnect() end
-            local fStart = input.Position
-            local fPos = FloatBtn.Position
-            local movedDist = 0
+            local fStart, fPos, movedDist = input.Position, FloatBtn.Position, 0
             fMoveConn = UserInputService.InputChanged:Connect(function(moveInput)
                 if not activeSession then return end
                 if moveInput.UserInputType == Enum.UserInputType.MouseMovement or moveInput.UserInputType == Enum.UserInputType.Touch then
@@ -391,10 +402,8 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
     MinBtn.MouseButton1Click:Connect(function()
         if not activeSession then return end
         local t = TweenService:Create(MenuScale, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {Scale = 0})
-        t:Play()
-        t.Completed:Wait()
-        MainMenuFrame.Visible = false
-        FloatBtn.Visible = true
+        t:Play(); t.Completed:Wait()
+        MainMenuFrame.Visible = false; FloatBtn.Visible = true
         TweenService:Create(FloatScale, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
     end)
     local Sidebar = create("Frame", {Name = "Sidebar", Size = UDim2.new(0, 52, 1, -62), Position = UDim2.new(0, 0, 0, 38), BackgroundColor3 = Color3.fromRGB(13, 13, 16), BorderSizePixel = 0, Parent = MainContent})
@@ -412,8 +421,8 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
         local tipText = create("TextLabel", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = text, TextColor3 = Color3.fromRGB(15, 15, 18), Font = Enum.Font.GothamBold, TextSize = 11, TextTransparency = 1, ZIndex = 61, Parent = tipFrame})
         return tipFrame, tipText
     end
-    local HomeTooltip, HomeTooltipText = createTabTooltip("Home", 0, 38 + 28)
-    local SettingsTooltip, SettingsTooltipText = createTabTooltip("Settings", 1, -48)
+    local HomeTip, HomeTipT = createTabTooltip("Home", 0, 38 + 28)
+    local SettingsTip, SettingsTipT = createTabTooltip("Settings", 1, -48)
     local function bindHover(btn, tip, textObj)
         btn.MouseEnter:Connect(function()
             if not activeSession then return end
@@ -424,14 +433,13 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
         btn.MouseLeave:Connect(function()
             local t = TweenService:Create(tip, TweenInfo.new(0.15), {BackgroundTransparency = 1})
             TweenService:Create(textObj, TweenInfo.new(0.15), {TextTransparency = 1}):Play()
-            t:Play()
-            task.spawn(function() t.Completed:Wait(); tip.Visible = false end)
+            t:Play(); task.spawn(function() t.Completed:Wait(); tip.Visible = false end)
         end)
     end
-    bindHover(HomeBtn, HomeTooltip, HomeTooltipText)
-    bindHover(SettingsBtn, SettingsTooltip, SettingsTooltipText)
+    bindHover(HomeBtn, HomeTip, HomeTipT)
+    bindHover(SettingsBtn, SettingsTip, SettingsTipT)
     local ContentArea = create("Frame", {Name = "ContentArea", Size = UDim2.new(1, -52, 1, -62), Position = UDim2.new(0, 52, 0, 38), BackgroundTransparency = 1, Parent = MainContent})
-    -- HOME VIEW
+    -- HOME
     local HomePage = create("Frame", {Name = "HomePage", Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Visible = true, Parent = ContentArea})
     create("TextLabel", {Name = "HomeTitle", Size = UDim2.new(0, 200, 0, 24), Position = UDim2.new(0, 24, 0, 14), BackgroundTransparency = 1, Text = "Home", TextColor3 = Color3.fromRGB(200, 200, 210), Font = Enum.Font.GothamBold, TextSize = 20, TextXAlignment = Enum.TextXAlignment.Left, Parent = HomePage})
     local playerUsername = localPlayer and (localPlayer.DisplayName or localPlayer.Name) or "User"
@@ -450,9 +458,7 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
         if not activeSession then return end
         isDiscordHovered = false
         TweenService:Create(homeDiscordStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(36, 36, 46)}):Play()
-        if HomeDiscordBtn.Text == "Discord" then
-            TweenService:Create(HomeDiscordBtn, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(170, 170, 180)}):Play()
-        end
+        if HomeDiscordBtn.Text == "Discord" then TweenService:Create(HomeDiscordBtn, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(170, 170, 180)}):Play() end
     end)
     HomeDiscordBtn.MouseButton1Click:Connect(function()
         if not activeSession then return end
@@ -466,6 +472,7 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
             end
         end)
     end)
+    -- KEY EXPIRY CARD
     local ExpiryBadge = create("Frame", {Name = "KeyExpiryBadge", AnchorPoint = Vector2.new(1, 0), Size = UDim2.new(0, 240, 0, 130), Position = UDim2.new(1, -24, 0, 88), BackgroundColor3 = Color3.fromRGB(16, 16, 21), BorderSizePixel = 0, Parent = HomePage})
     create("UICorner", {CornerRadius = UDim.new(0, 12), Parent = ExpiryBadge})
     create("UIStroke", {Thickness = 1, Color = Color3.fromRGB(36, 36, 46), ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = ExpiryBadge})
@@ -478,6 +485,7 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
     local expiryDateStr = os.date("%d/%m/%Y %H:%M", expiryTime)
     create("TextLabel", {Name = "DateText", Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1, Text = expiryDateStr, TextColor3 = Color3.fromRGB(155, 155, 170), Font = Enum.Font.GothamMedium, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 1, Parent = DateRow})
     create("TextLabel", {Name = "DateHint", Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1, Text = "(DD/MM/YYYY)", TextColor3 = Color3.fromRGB(95, 95, 110), Font = Enum.Font.Gotham, TextSize = 9, TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 2, Parent = DateRow})
+    -- BOTTOM BAR
     local BottomStatusBar = create("Frame", {Name = "BottomStatusBar", Size = UDim2.new(1, 0, 0, 24), Position = UDim2.new(0, 0, 1, -24), BackgroundColor3 = Color3.fromRGB(13, 13, 16), BorderSizePixel = 0, ZIndex = 8, Parent = MainContent})
     create("Frame", {Name = "BottomDivider", Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 0, 0), BackgroundColor3 = Color3.fromRGB(26, 26, 32), BorderSizePixel = 0, Parent = BottomStatusBar})
     local SessionTimerLabel = create("TextLabel", {Name = "SessionTimerLabel", Size = UDim2.new(0, 250, 1, 0), Position = UDim2.new(0, 16, 0, 0), BackgroundTransparency = 1, Text = "Session: 00h 00m 00s", TextColor3 = Color3.fromRGB(145, 145, 160), Font = Enum.Font.GothamMedium, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left, Parent = BottomStatusBar})
@@ -490,20 +498,13 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
                 showExpiredPopup(verifiedKey)
                 break
             end
-            local days = math.floor(remaining / 86400)
-            local hours = math.floor((remaining % 86400) / 3600)
-            local mins = math.floor((remaining % 3600) / 60)
-            local secs = remaining % 60
-            ExpiryCountdownText.Text = string.format("%dd %dh %dm %02ds left", days, hours, mins, secs)
+            ExpiryCountdownText.Text = string.format("%dd %dh %dm %02ds left", math.floor(remaining / 86400), math.floor((remaining % 86400) / 3600), math.floor((remaining % 3600) / 60), remaining % 60)
             local elapsed = math.floor(tick() - SCRIPT_START_TIME)
-            local sH = math.floor(elapsed / 3600)
-            local sM = math.floor((elapsed % 3600) / 60)
-            local sS = elapsed % 60
-            SessionTimerLabel.Text = string.format("Session: %02dh %02dm %02ds", sH, sM, sS)
+            SessionTimerLabel.Text = string.format("Session: %02dh %02dm %02ds", math.floor(elapsed / 3600), math.floor((elapsed % 3600) / 60), elapsed % 60)
             task.wait(1)
         end
     end)
-    -- SETTINGS PAGE
+    -- SETTINGS
     local SettingsPage = create("Frame", {Name = "SettingsPage", Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Visible = false, Parent = ContentArea})
     create("TextLabel", {Name = "SettingsTitle", Size = UDim2.new(0, 200, 0, 24), Position = UDim2.new(0, 24, 0, 14), BackgroundTransparency = 1, Text = "Settings", TextColor3 = Color3.fromRGB(200, 200, 210), Font = Enum.Font.GothamBold, TextSize = 20, TextXAlignment = Enum.TextXAlignment.Left, Parent = SettingsPage})
     local ToggleCard = create("Frame", {Name = "AutoCloseToggleCard", Size = UDim2.new(1, -48, 0, 64), Position = UDim2.new(0, 24, 0, 56), BackgroundColor3 = Color3.fromRGB(16, 16, 21), BorderSizePixel = 0, Parent = SettingsPage})
@@ -517,31 +518,23 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
     create("UICorner", {CornerRadius = UDim.new(1, 0), Parent = ToggleKnob})
     local ToggleClickTarget = create("TextButton", {Name = "ToggleClickTarget", Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "", Parent = ToggleHolder})
     local function setToggleVisual(on)
-        if on then
-            TweenService:Create(ToggleHolder, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {BackgroundColor3 = Color3.fromRGB(245, 245, 245)}):Play()
-            TweenService:Create(ToggleKnob, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.new(1, -20, 0.5, -9), BackgroundColor3 = Color3.fromRGB(15, 15, 18)}):Play()
-        else
-            TweenService:Create(ToggleHolder, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {BackgroundColor3 = Color3.fromRGB(40, 40, 48)}):Play()
-            TweenService:Create(ToggleKnob, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.new(0, 2, 0.5, -9), BackgroundColor3 = Color3.fromRGB(170, 170, 180)}):Play()
-        end
+        TweenService:Create(ToggleHolder, TweenInfo.new(0.22), {BackgroundColor3 = on and Color3.fromRGB(245, 245, 245) or Color3.fromRGB(40, 40, 48)}):Play()
+        TweenService:Create(ToggleKnob, TweenInfo.new(0.22), {Position = on and UDim2.new(1, -20, 0.5, -9) or UDim2.new(0, 2, 0.5, -9), BackgroundColor3 = on and Color3.fromRGB(15, 15, 18) or Color3.fromRGB(170, 170, 180)}):Play()
     end
     ToggleClickTarget.MouseButton1Click:Connect(function()
         if not activeSession then return end
         autoClosePopupsEnabled = not autoClosePopupsEnabled
         setToggleVisual(autoClosePopupsEnabled)
     end)
+    -- Tab Switching
     local currentTab = "Home"
     local function setTab(tabName)
         if not activeSession or currentTab == tabName then return end
         currentTab = tabName
-        local targetY
-        if tabName == "Home" then targetY = UDim2.new(0, 0, 0, 28)
-        elseif tabName == "Settings" then targetY = UDim2.new(0, 0, 1, -24) end
-        TweenService:Create(ActiveMarker, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = targetY}):Play()
-        local activeColor = Color3.fromRGB(255, 255, 255)
-        local inactiveColor = Color3.fromRGB(130, 130, 140)
+        TweenService:Create(ActiveMarker, TweenInfo.new(0.28), {Position = tabName == "Home" and UDim2.new(0, 0, 0, 28) or UDim2.new(0, 0, 1, -24)}):Play()
+        local ac, ic = Color3.fromRGB(255, 255, 255), Color3.fromRGB(130, 130, 140)
         local function updateParts(parts, isActive)
-            local color = isActive and activeColor or inactiveColor
+            local color = isActive and ac or ic
             for _, part in ipairs(parts) do
                 if part:IsA("UIStroke") then TweenService:Create(part, TweenInfo.new(0.2), {Color = color}):Play()
                 else TweenService:Create(part, TweenInfo.new(0.2), {BackgroundColor3 = color}):Play() end
@@ -557,16 +550,15 @@ openMainMenu = function(expiryTimestamp, verifiedKey)
     local promptMenuClose = attachConfirmModal(MainMenuFrame, function()
         activeSession = false
         clearTeleportState()
-        local t = TweenService:Create(MenuScale, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {Scale = 0})
-        t:Play()
-        t.Completed:Wait()
+        local t = TweenService:Create(MenuScale, TweenInfo.new(0.28), {Scale = 0})
+        t:Play(); t.Completed:Wait()
         MenuGui:Destroy()
     end)
     CloseBtn.MouseButton1Click:Connect(promptMenuClose)
     TweenService:Create(MenuScale, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
 end
 
--- KEY SYSTEM UI SETUP
+-- KEY SYSTEM UI
 
 local KeyGui = create("ScreenGui", {Name = "XyloKeySystemUI", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, Parent = CoreGui})
 local MainFrame = create("Frame", {Name = "MainFrame", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0), Size = UDim2.new(0, 370, 0, 295), BackgroundColor3 = Color3.fromRGB(11, 11, 13), BorderSizePixel = 0, ClipsDescendants = true, Parent = KeyGui})
@@ -592,9 +584,8 @@ KeyCloseBtn.MouseLeave:Connect(function() TweenService:Create(KeyCloseBtn, Tween
 makeDraggable(KeyTopBar, MainFrame)
 local promptKeyClose = attachConfirmModal(MainFrame, function()
     clearTeleportState()
-    local t = TweenService:Create(MainScale, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {Scale = 0})
-    t:Play()
-    t.Completed:Wait()
+    local t = TweenService:Create(MainScale, TweenInfo.new(0.28), {Scale = 0})
+    t:Play(); t.Completed:Wait()
     KeyGui:Destroy()
 end)
 KeyCloseBtn.MouseButton1Click:Connect(promptKeyClose)
@@ -680,8 +671,7 @@ local function validateKey()
                     if parsedExp then computedExpiryTime = parsedExp
                     elseif parsedAct then computedExpiryTime = parsedAct + duration
                     elseif data.timeLeft or data.time_left then computedExpiryTime = os.time() + (tonumber(data.timeLeft or data.time_left) or 86400) end
-                    if computedExpiryTime and computedExpiryTime <= os.time() then isExpired = true
-                    else isAccepted = true end
+                    if computedExpiryTime and computedExpiryTime <= os.time() then isExpired = true else isAccepted = true end
                 else
                     local msg = tostring(data.message or data.error or ""):lower()
                     if data.expired == true or msg:find("expire") then isExpired = true end
@@ -693,9 +683,8 @@ local function validateKey()
             if rememberKey and writefile then pcall(function() writefile("xylo_key.txt", enteredKey) end)
             else deleteSavedKey() end
             task.wait(1.1)
-            local closeTween = TweenService:Create(MainScale, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {Scale = 0})
-            closeTween:Play()
-            closeTween.Completed:Wait()
+            local closeTween = TweenService:Create(MainScale, TweenInfo.new(0.28), {Scale = 0})
+            closeTween:Play(); closeTween.Completed:Wait()
             KeyGui:Destroy()
             startKeyWatcher(enteredKey)
             openMainMenu(computedExpiryTime, enteredKey)
@@ -722,12 +711,10 @@ task.spawn(function()
         LoadingTextShineGradient.Offset = Vector2.new(-1.2, 0)
         local shineLogo = TweenService:Create(LogoShineGradient, TweenInfo.new(0.85, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Offset = Vector2.new(1.2, 0)})
         local shineText = TweenService:Create(LoadingTextShineGradient, TweenInfo.new(0.85, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Offset = Vector2.new(1.2, 0)})
-        shineLogo:Play()
-        shineText:Play()
-        shineLogo.Completed:Wait()
+        shineLogo:Play(); shineText:Play(); shineLogo.Completed:Wait()
         if i < 2 then task.wait(0.12) end
     end
-    -- Teleport reload: skip key system, open menu directly
+    -- Teleport reload: skip key system entirely
     if isTeleportReload and savedKeyValue and savedExpiryTime then
         KeyGui:Destroy()
         startKeyWatcher(savedKeyValue)
@@ -735,17 +722,16 @@ task.spawn(function()
         return
     end
     -- Fresh execution: show key system
-    TweenService:Create(LoadingContainer, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {GroupTransparency = 1}):Play()
+    TweenService:Create(LoadingContainer, TweenInfo.new(0.35), {GroupTransparency = 1}):Play()
     task.wait(0.35)
     LoadingContainer.Visible = false
     ContentContainer.Visible = true
-    TweenService:Create(ContentContainer, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {GroupTransparency = 0}):Play()
+    TweenService:Create(ContentContainer, TweenInfo.new(0.3), {GroupTransparency = 0}):Play()
     task.spawn(function()
         while KeyGui and KeyGui.Parent do
             TextShineGradient.Offset = Vector2.new(-1.2, 0)
             local titleShine = TweenService:Create(TextShineGradient, TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Offset = Vector2.new(1.2, 0)})
-            titleShine:Play()
-            titleShine.Completed:Wait()
+            titleShine:Play(); titleShine.Completed:Wait()
             task.wait(1.6)
         end
     end)
